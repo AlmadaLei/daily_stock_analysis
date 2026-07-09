@@ -24,7 +24,7 @@ python -m pytest tests/test_anspire_search.py -v
 import os
 import sys
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -48,7 +48,10 @@ if "newspaper" not in sys.modules:
 from src.config import Config, get_config
 from src.search_service import (
     AnspireSearchProvider,
+    SearchResponse,
+    SearchResult,
     SearchService,
+    SearXNGSearchProvider,
     get_search_service,
     reset_search_service,
 )
@@ -426,18 +429,115 @@ class TestAnspireSearchService(unittest.TestCase):
         self.assertEqual(len(anspire_providers), 0)
     
     def test_search_service_priority(self):
-        """测试 Anspire 优先级"""
+        """测试 Anspire 作为 SearXNG 之后的兜底。"""
         service = SearchService(
             anspire_keys=["anspire_key"],
-            bocha_keys=["bocha_key"],
-            tavily_keys=["tavily_key"],
+            bocha_keys=[],
+            tavily_keys=[],
+            searxng_base_urls=["https://searxng.example.org"],
             searxng_public_instances_enabled=False,
             news_max_age_days=3,
             news_strategy_profile="short"
         )
-        
-        self.assertIsInstance(service._providers[0], AnspireSearchProvider)
 
+        provider_names = [provider.name for provider in service._providers]
+        self.assertIn("SearXNG", provider_names)
+        self.assertIn("Anspire", provider_names)
+        self.assertLess(provider_names.index("SearXNG"), provider_names.index("Anspire"))
+
+    def test_comprehensive_intel_uses_anspire_only_when_searxng_is_insufficient(self):
+        """SearXNG should be tried first; Anspire is only used to fill insufficient results."""
+        service = SearchService(
+            anspire_keys=["anspire_key"],
+            bocha_keys=[],
+            tavily_keys=[],
+            brave_keys=[],
+            serpapi_keys=[],
+            minimax_keys=[],
+            searxng_base_urls=["https://searxng.example.org"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        service._rank_news_response = lambda response, **_: response
+        service._filter_ranked_news_for_context = lambda response, **_: response
+
+        today = date.today().isoformat()
+
+        def make_response(provider_name, count):
+            return SearchResponse(
+                query="query",
+                provider=provider_name,
+                success=True,
+                results=[
+                    SearchResult(
+                        title=f"牧原股份 news {i}",
+                        snippet="牧原股份 latest update",
+                        url=f"https://example.com/{provider_name}/{i}",
+                        source="example.com",
+                        published_date=today,
+                    )
+                    for i in range(count)
+                ],
+            )
+
+        searxng_provider = next(p for p in service._providers if isinstance(p, SearXNGSearchProvider))
+        anspire_provider = next(p for p in service._providers if isinstance(p, AnspireSearchProvider))
+        searxng_provider.search = MagicMock(return_value=make_response("SearXNG", 1))
+        anspire_provider.search = MagicMock(return_value=make_response("Anspire", 3))
+
+        results = service.search_comprehensive_intel("002714", "牧原股份", max_searches=1)
+
+        searxng_provider.search.assert_called_once()
+        anspire_provider.search.assert_called_once()
+        self.assertEqual(results["latest_news"].provider, "Anspire")
+        self.assertEqual(len(results["latest_news"].results), 3)
+
+    def test_comprehensive_intel_skips_anspire_when_searxng_has_enough_results(self):
+        """A complete SearXNG result set should avoid spending Anspire calls."""
+        service = SearchService(
+            anspire_keys=["anspire_key"],
+            bocha_keys=[],
+            tavily_keys=[],
+            brave_keys=[],
+            serpapi_keys=[],
+            minimax_keys=[],
+            searxng_base_urls=["https://searxng.example.org"],
+            searxng_public_instances_enabled=False,
+            news_max_age_days=3,
+            news_strategy_profile="short",
+        )
+        service._rank_news_response = lambda response, **_: response
+        service._filter_ranked_news_for_context = lambda response, **_: response
+
+        today = date.today().isoformat()
+        response = SearchResponse(
+            query="query",
+            provider="SearXNG",
+            success=True,
+            results=[
+                SearchResult(
+                    title=f"牧原股份 news {i}",
+                    snippet="牧原股份 latest update",
+                    url=f"https://example.com/searxng/{i}",
+                    source="example.com",
+                    published_date=today,
+                )
+                for i in range(3)
+            ],
+        )
+
+        searxng_provider = next(p for p in service._providers if isinstance(p, SearXNGSearchProvider))
+        anspire_provider = next(p for p in service._providers if isinstance(p, AnspireSearchProvider))
+        searxng_provider.search = MagicMock(return_value=response)
+        anspire_provider.search = MagicMock()
+
+        results = service.search_comprehensive_intel("002714", "牧原股份", max_searches=1)
+
+        searxng_provider.search.assert_called_once()
+        anspire_provider.search.assert_not_called()
+        self.assertEqual(results["latest_news"].provider, "SearXNG")
+        self.assertEqual(len(results["latest_news"].results), 3)
 
 class TestAnspireIntegration(unittest.TestCase):
     """Anspire 集成测试（需要真实 API Key）"""
