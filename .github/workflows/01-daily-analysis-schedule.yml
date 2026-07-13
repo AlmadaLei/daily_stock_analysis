@@ -1,0 +1,34 @@
+name: 每日股票分析定时触发
+
+on:
+  # 工作日 UTC 00:07 = 北京时间 08:07
+  schedule:
+    - cron: '7 0 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 触发每日股票分析
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const ref = context.payload.repository.default_branch;
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: '00-daily-analysis.yml',
+              ref,
+              inputs: {
+                mode: 'full',
+                force_run: 'false',
+              },
+            });
+
+            core.info(`已触发每日股票分析，分支: ${ref}`);
