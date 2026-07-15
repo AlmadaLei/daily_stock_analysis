@@ -1,9 +1,10 @@
 name: 每日股票分析定时触发
 
 on:
-  # 工作日 UTC 00:07 = 北京时间 08:07
+  # 工作日北京时间 08:07
   schedule:
-    - cron: '7 0 * * 1-5'
+    - cron: '7 8 * * 1-5'
+      timezone: 'Asia/Shanghai'
   workflow_dispatch:
 
 permissions:
